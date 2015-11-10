@@ -106,8 +106,11 @@ namespace OxPt
         [InlineData("DA236-Page-Num-in-Footer.docx", "DA-Content-List.xml", false)]
         [InlineData("DA250-ConditionalWithRichXPath.docx", "DA250-Address.xml", false)]
         [InlineData("DA251-EnhancedTables.docx", "DA-Data.xml", false)]
-        [InlineData("DA252-Table-With-Sum.docx", "DA-Data.xml", false)] 
-        [InlineData("DA253-Table-With-Sum-Run-Level-CC.docx", "DA-Data.xml", false)]     
+        [InlineData("DA252-Table-With-Sum.docx", "DA-Data.xml", false)]
+        [InlineData("DA253-Table-With-Sum-Run-Level-CC.docx", "DA-Data.xml", false)]
+        [InlineData("DA254-Table-With-XPath-Sum.docx", "DA-Data.xml", false)]
+        [InlineData("DA255-Table-With-XPath-Sum-Run-Level-CC.docx", "DA-Data.xml", false)]
+        
         public void DA101(string name, string data, bool err)
         {
             FileInfo templateDocx = new FileInfo(Path.Combine(TestUtil.SourceDir.FullName, name));

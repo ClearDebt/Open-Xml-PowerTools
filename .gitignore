@@ -18,6 +18,7 @@ Thumbs.db
 **/PivotTables01/QuarterlyPivot.xlsx
 **/PivotTables01/QuarterlyUnitSalesWithPivot.xlsx
 
+*.orig
 *.suo
 *.user
 *conflicted*
