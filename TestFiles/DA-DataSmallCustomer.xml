@@ -2,7 +2,7 @@
 <Customer>
   <CustomerID>1</CustomerID>
   <Name>Cheryl</Name>
-  <HighValueCustomer>True</HighValueCustomer>
+  <HighValueCustomer>False</HighValueCustomer>
   <Orders>
     <Order>
       <ProductDescription>Unicycle</ProductDescription>

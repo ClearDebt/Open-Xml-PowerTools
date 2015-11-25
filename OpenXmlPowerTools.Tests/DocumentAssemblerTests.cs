@@ -68,9 +68,13 @@ namespace OxPt
         [InlineData("DA032-TooMuchDataForConditional.docx", "DA-TooMuchDataForConditional.xml", true)]
         [InlineData("DA033-ConditionalOnAttribute.docx", "DA-ConditionalOnAttribute.xml", false)]
         [InlineData("DA034-HeaderFooter.docx", "DA-Data.xml", false)]
+        [InlineData("DA035-SchemaErrorInRepeat.docx", "DA-Data.xml", true)]
+        [InlineData("DA036-SchemaErrorInConditional.docx", "DA-Data.xml", true)]
+
         [InlineData("DA100-TemplateDocument.docx", "DA-Data.xml", false)]
         [InlineData("DA101-TemplateDocument.docx", "DA-Data.xml", true)]
         [InlineData("DA102-TemplateDocument.docx", "DA-Data.xml", true)]
+
         [InlineData("DA201-TemplateDocument.docx", "DA-Data.xml", false)]
         [InlineData("DA202-TemplateDocument.docx", "DA-DataNotHighValueCust.xml", false)]
         [InlineData("DA203-Select-XPathFindsNoData.docx", "DA-Data.xml", true)]
@@ -104,12 +108,27 @@ namespace OxPt
         [InlineData("DA234-HeaderFooter.docx", "DA-Data.xml", false)]
         [InlineData("DA235-Crashes.docx", "DA-Content-List.xml", false)]
         [InlineData("DA236-Page-Num-in-Footer.docx", "DA-Content-List.xml", false)]
+        [InlineData("DA237-SchemaErrorInRepeat.docx", "DA-Data.xml", true)]
+        [InlineData("DA238-SchemaErrorInConditional.docx", "DA-Data.xml", true)]
+        [InlineData("DA239-RunLevelCC-Repeat.docx", "DA-Data.xml", false)]
+
         [InlineData("DA250-ConditionalWithRichXPath.docx", "DA250-Address.xml", false)]
         [InlineData("DA251-EnhancedTables.docx", "DA-Data.xml", false)]
         [InlineData("DA252-Table-With-Sum.docx", "DA-Data.xml", false)]
         [InlineData("DA253-Table-With-Sum-Run-Level-CC.docx", "DA-Data.xml", false)]
         [InlineData("DA254-Table-With-XPath-Sum.docx", "DA-Data.xml", false)]
         [InlineData("DA255-Table-With-XPath-Sum-Run-Level-CC.docx", "DA-Data.xml", false)]
+        [InlineData("DA256-NoInvalidDocOnErrorInRun.docx", "DA-Data.xml", true)]
+        [InlineData("DA257-OptionalRepeat.docx", "DA-Data.xml", false)]
+        [InlineData("DA258-ContentAcceptsCharsAsXPathResult.docx", "DA-Data.xml", false)]
+        [InlineData("DA259-MultiLineContents.docx", "DA-Data.xml", false)]
+        [InlineData("DA260-RunLevelRepeat.docx", "DA-Data.xml", false)]
+        [InlineData("DA261-RunLevelConditional.docx", "DA-Data.xml", false)]
+        [InlineData("DA262-ConditionalNotMatch.docx", "DA-Data.xml", false)]
+        [InlineData("DA263-ConditionalNotMatch.docx", "DA-DataSmallCustomer.xml", false)]
+        [InlineData("DA264-InvalidRunLevelRepeat.docx", "DA-Data.xml", true)]
+        [InlineData("DA265-RunLevelRepeatWithWhiteSpaceBefore.docx", "DA-Data.xml", false)]
+        [InlineData("DA266-RunLevelRepeat-NoData.docx", "DA-Data.xml", true)]
         
         public void DA101(string name, string data, bool err)
         {
@@ -132,7 +151,7 @@ namespace OxPt
                     OpenXmlValidator v = new OpenXmlValidator();
                     var valErrors = v.Validate(wDoc).Where(ve => !s_ExpectedErrors.Contains(ve.Description));
 
-#if true
+#if false
                     StringBuilder sb = new StringBuilder();
                     foreach (var item in valErrors.Select(r => r.Description).OrderBy(t => t).Distinct())
 	                {
@@ -147,6 +166,21 @@ namespace OxPt
             }
 
             Assert.Equal(err, returnedTemplateError);
+        }
+
+        [Theory]
+        [InlineData("DA259-MultiLineContents.docx", "DA-Data.xml", false)]
+        public void DA259(string name, string data, bool err)
+        {
+            DA101(name, data, err);
+            var assembledDocx = new FileInfo(Path.Combine(TestUtil.TempDir.FullName, name.Replace(".docx", "-processed-by-DocumentAssembler.docx")));
+            WmlDocument afterAssembling = new WmlDocument(assembledDocx.FullName);
+            int brCount = afterAssembling.MainDocumentPart
+                            .Element(W.body)
+                            .Elements(W.p).ElementAt(1)
+                            .Elements(W.r)
+                            .Elements(W.br).Count();
+            Assert.Equal(4, brCount);
         }
 
         [Theory]
