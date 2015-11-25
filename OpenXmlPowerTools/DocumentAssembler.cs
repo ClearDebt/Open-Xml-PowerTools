@@ -68,22 +68,102 @@ namespace OpenXmlPowerTools
         {
             XDocument xDoc = part.GetXDocument();
 
-            var removedBookmarksXDoc = RemoveGoBackBookmarks(xDoc.Root);
+            var xDocRoot = RemoveGoBackBookmarks(xDoc.Root);
 
             // content controls in cells can surround the W.tc element, so transform so that such content controls are within the cell content
-            XElement normalizedContentControlsInCells = (XElement)NormalizeContentControlsInCells(removedBookmarksXDoc);
+            xDocRoot = (XElement)NormalizeContentControlsInCells(xDocRoot);
 
-            XElement newRootElementWithMetadata = (XElement)TransformToMetadata(normalizedContentControlsInCells, data, te);
+            xDocRoot = (XElement)TransformToMetadata(xDocRoot, data, te);
 
-            NormalizeTablesRepeatAndConditional(newRootElementWithMetadata, te);
-            XElement newRootElement = newRootElementWithMetadata;
+            // Table might have been placed at run-level, when it should be at block-level, so fix this.
+            // Repeat, EndRepeat, Conditional, EndConditional are allowed at run level, but only if there is a matching pair
+            // if there is only one Repeat, EndRepeat, Conditional, EndConditional, then move to block level.
+            // if there is a matching pair, then is OK.
+            xDocRoot = (XElement)ForceBlockLevelAsAppropriate(xDocRoot, te);
+
+            NormalizeTablesRepeatAndConditional(xDocRoot, te);
+
+            // any EndRepeat, EndConditional that remain are orphans, so replace with an error
+            ProcessOrphanEndRepeatEndConditional(xDocRoot, te);
 
             // do the actual content replacement
-            newRootElement = (XElement)ContentReplacementTransform(newRootElement, data, te);
+            xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te);
 
-            xDoc.Elements().First().ReplaceWith(newRootElement);
+            xDoc.Elements().First().ReplaceWith(xDocRoot);
             part.PutXDocument();
             return;
+        }
+
+        private static XName[] s_MetaToForceToBlock = new XName[] {
+            PA.Conditional,
+            PA.EndConditional,
+            PA.Repeat,
+            PA.EndRepeat,
+            PA.Table,
+        };
+
+        private static object ForceBlockLevelAsAppropriate(XNode node, TemplateError te)
+        {
+            XElement element = node as XElement;
+            if (element != null)
+            {
+                if (element.Name == W.p)
+                {
+                    var childMeta = element.Elements().Where(n => s_MetaToForceToBlock.Contains(n.Name)).ToList();
+                    if (childMeta.Count() == 1)
+                    {
+                        var child = childMeta.First();
+                        var otherTextInParagraph = element.Elements(W.r).Elements(W.t).Select(t => (string)t).StringConcatenate().Trim();
+                        if (otherTextInParagraph != "")
+                        {
+                            var newPara = new XElement(element);
+                            var newMeta = newPara.Elements().Where(n => s_MetaToForceToBlock.Contains(n.Name)).First();
+                            newMeta.ReplaceWith(CreateRunErrorMessage("Error: Unmatched metadata can't be in paragraph with other text", te));
+                            return newPara;
+                        }
+                        var meta = new XElement(child.Name,
+                            child.Attributes(),
+                            new XElement(W.p,
+                                element.Attributes(),
+                                element.Elements(W.pPr),
+                                child.Elements()));
+                        return meta;
+                    }
+                    var count = childMeta.Count();
+                    if (count % 2 == 0)
+                    {
+                        if (childMeta.Where(c => c.Name == PA.Repeat).Count() != childMeta.Where(c => c.Name == PA.EndRepeat).Count())
+                            return CreateContextErrorMessage(element, "Error: Mismatch Repeat / EndRepeat at run level", te);
+                        if (childMeta.Where(c => c.Name == PA.Conditional).Count() != childMeta.Where(c => c.Name == PA.EndConditional).Count())
+                            return CreateContextErrorMessage(element, "Error: Mismatch Conditional / EndConditional at run level", te);
+                        return new XElement(element.Name,
+                            element.Attributes(),
+                            element.Nodes().Select(n => ForceBlockLevelAsAppropriate(n, te)));
+                    }
+                    else
+                    {
+                        return CreateContextErrorMessage(element, "Error: Invalid metadata at run level", te);
+                    }
+                }
+                return new XElement(element.Name,
+                    element.Attributes(),
+                    element.Nodes().Select(n => ForceBlockLevelAsAppropriate(n, te)));
+            }
+            return node;
+        }
+
+        private static void ProcessOrphanEndRepeatEndConditional(XElement xDocRoot, TemplateError te)
+        {
+            foreach (var element in xDocRoot.Descendants(PA.EndRepeat).ToList())
+            {
+                var error = CreateContextErrorMessage(element, "Error: EndRepeat without matching Repeat", te);
+                element.ReplaceWith(error);
+            }
+            foreach (var element in xDocRoot.Descendants(PA.EndConditional).ToList())
+            {
+                var error = CreateContextErrorMessage(element, "Error: EndConditional without matching Conditional", te);
+                element.ReplaceWith(error);
+            }
         }
 
         private static XElement RemoveGoBackBookmarks(XElement xElement)
@@ -431,6 +511,7 @@ namespace OpenXmlPowerTools
                                   <xs:element name='Repeat'>
                                     <xs:complexType>
                                       <xs:attribute name='Select' type='xs:string' use='required' />
+                                      <xs:attribute name='Optional' type='xs:boolean' use='optional' />
                                     </xs:complexType>
                                   </xs:element>
                                 </xs:schema>",
@@ -453,7 +534,8 @@ namespace OpenXmlPowerTools
                                   <xs:element name='Conditional'>
                                     <xs:complexType>
                                       <xs:attribute name='Select' type='xs:string' use='required' />
-                                      <xs:attribute name='Match' type='xs:string' use='required' />
+                                      <xs:attribute name='Match' type='xs:string' use='optional' />
+                                      <xs:attribute name='NotMatch' type='xs:string' use='optional' />
                                     </xs:complexType>
                                   </xs:element>
                                 </xs:schema>",
@@ -506,6 +588,7 @@ namespace OpenXmlPowerTools
             public static XName Select = "Select";
             public static XName Optional = "Optional";
             public static XName Match = "Match";
+            public static XName NotMatch = "NotMatch";
             public static XName Depth = "Depth";
         }
 
@@ -532,72 +615,52 @@ namespace OpenXmlPowerTools
                     XElement para = element.Descendants(W.p).FirstOrDefault();
                     XElement run = element.Descendants(W.r).FirstOrDefault();
 
-                    IEnumerable<XObject> selectedData;
-                    string xPath = (string)element.Attribute(PA.Select);
+                    var xPath = (string) element.Attribute(PA.Select);
+                    var optionalString = (string) element.Attribute(PA.Optional);
+                    bool optional = (optionalString != null && optionalString.ToLower() == "true");
+
+                    string newValue;
                     try
                     {
-                        selectedData = ((IEnumerable)data.XPathEvaluate(xPath)).Cast<XObject>();
+                        newValue = EvaluateXPathToString(data, xPath, optional);
                     }
                     catch (XPathException e)
                     {
-                        var errorRun = CreateRunErrorMessage("XPathException: " + e.Message, templateError);
-                        if (para != null)
-                            return new XElement(W.p, errorRun);
-                        else
-                            return errorRun;
+                        return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
-                    if (!selectedData.Any())
+
+                    if (para != null)
                     {
-                        var optionalString = (string)element.Attribute(PA.Optional);
-                        if (optionalString != null && optionalString.ToLower() == "true")
+
+                        XElement p = new XElement(W.p, para.Elements(W.pPr));
+                        foreach(string line in newValue.Split('\n'))
                         {
-                            return null;
+                            p.Add(new XElement(W.r,
+                                    para.Elements(W.r).Elements(W.rPr).FirstOrDefault(),
+                                (p.Elements().Count() > 1) ? new XElement(W.br) : null,
+                                new XElement(W.t, line)));
                         }
-                        else
-                        {
-                            var errorRun = CreateRunErrorMessage(string.Format("Content XPath expression ({0}) returned no results", xPath), templateError);
-                            if (para != null)
-                                return new XElement(W.p, errorRun);
-                            else
-                                return errorRun;
-                        }
-                    }
-                    else if (selectedData.Count() > 1)
-                    {
-                        var errorRun = CreateRunErrorMessage(string.Format("Content XPath expression ({0}) returned more than one node", xPath), templateError);
-                        if (para != null)
-                            return new XElement(W.p, errorRun);
-                        else
-                            return errorRun;
+                        return p;
                     }
                     else
                     {
-                        string newValue = null;
-                        XObject selectedDatum = selectedData.First();
-                        if (selectedDatum is XElement)
-                            newValue = ((XElement)selectedDatum).Value;
-                        else if (selectedDatum is XAttribute)
-                            newValue = ((XAttribute)selectedDatum).Value;
-
-                        if (para != null)
+                        List<XElement> list = new List<XElement>();
+                        foreach(string line in newValue.Split('\n'))
                         {
-                            return new XElement(W.p,
-                                para.Elements(W.pPr),
-                                new XElement(W.r,
-                                    para.Elements(W.r).Elements(W.rPr).FirstOrDefault(),
-                                    new XElement(W.t, newValue)));
-                        }
-                        else
-                        {
-                            return new XElement(W.r,
+                            list.Add(new XElement(W.r,
                                 run.Elements().Where(e => e.Name != W.t),
-                                new XElement(W.t, newValue));
+                                (list.Count > 0) ? new XElement(W.br) : null,
+                                new XElement(W.t, line)));
                         }
+                        return list;
                     }
                 }
                 if (element.Name == PA.Repeat)
                 {
                     string selector = (string)element.Attribute(PA.Select);
+                    var optionalString = (string)element.Attribute(PA.Optional);
+                    bool optional = (optionalString != null && optionalString.ToLower() == "true");
+
                     IEnumerable<XElement> repeatingData;
                     try
                     {
@@ -605,10 +668,21 @@ namespace OpenXmlPowerTools
                     }
                     catch (XPathException e)
                     {
-                        return CreateParaErrorMessage("XPathException: " + e.Message, templateError);
+                        return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
                     if (!repeatingData.Any())
-                        return CreateParaErrorMessage("Repeat: Select returned no data", templateError);
+                    {
+                        if (optional)
+                        {
+                            return null;
+                            //XElement para = element.Descendants(W.p).FirstOrDefault();
+                            //if (para != null)
+                            //    return new XElement(W.p, new XElement(W.r));
+                            //else
+                            //    return new XElement(W.r);
+                        }
+                        return CreateContextErrorMessage(element, "Repeat: Select returned no data", templateError);
+                    }
                     var newContent = repeatingData.Select(d =>
                         {
                             var content = element
@@ -629,10 +703,10 @@ namespace OpenXmlPowerTools
                     }
                     catch (XPathException e)
                     {
-                        return CreateParaErrorMessage("XPathException: " + e.Message, templateError);
+                        return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
                     if (tableData.Count() == 0)
-                        return CreateParaErrorMessage("Table Select returned no data", templateError);
+                        return CreateContextErrorMessage(element, "Table Select returned no data", templateError);
                     XElement table = element.Element(W.tbl);
                     XElement protoRow = table.Elements(W.tr).Skip(1).FirstOrDefault();
                     var footerRowsBeforeTransform = table
@@ -643,7 +717,7 @@ namespace OpenXmlPowerTools
                         .Select(x => ContentReplacementTransform(x, data, templateError))
                         .ToList();
                     if (protoRow == null)
-                        return CreateParaErrorMessage(string.Format("Table does not contain a prototype row"), templateError);
+                        return CreateContextErrorMessage(element, string.Format("Table does not contain a prototype row"), templateError);
                     protoRow.Descendants(W.bookmarkStart).Remove();
                     protoRow.Descendants(W.bookmarkEnd).Remove();
                     XElement newTable = new XElement(W.tbl,
@@ -658,14 +732,10 @@ namespace OpenXmlPowerTools
                                         XElement paragraph = tc.Elements(W.p).FirstOrDefault();
                                         XElement cellRun = paragraph.Elements(W.r).FirstOrDefault();
                                         string xPath = paragraph.Value;
-                                        IEnumerable<XObject> selectedData;
-                                        object xPathSelectResult;
                                         string newValue = null;
                                         try
                                         {
-                                            //support some cells in the table may not have an xpath expression.
-                                            if (String.IsNullOrWhiteSpace(xPath)) xPathSelectResult = String.Empty;
-                                            else xPathSelectResult = d.XPathEvaluate(xPath);
+                                            newValue = EvaluateXPathToString(d, xPath, false);
                                         }
                                         catch (XPathException e)
                                         {
@@ -673,52 +743,8 @@ namespace OpenXmlPowerTools
                                                 tc.Elements().Where(z => z.Name != W.p),
                                                 new XElement(W.p,
                                                     paragraph.Element(W.pPr),
-                                                    CreateRunErrorMessage("XPathException: " + e.Message, templateError)));
+                                                    CreateRunErrorMessage(e.Message, templateError)));
                                             return errorCell;
-                                        }
-
-                                        if ((xPathSelectResult is IEnumerable) && !(xPathSelectResult is string))
-                                        {
-                                            selectedData = ((IEnumerable) xPathSelectResult).Cast<XObject>();
-                                            if (!selectedData.Any())
-                                            {
-                                                var errorRun =
-                                                    CreateRunErrorMessage(
-                                                        string.Format("XPath expression ({0}) returned no results",
-                                                            xPath), templateError);
-                                                XElement errorCell = new XElement(W.tc,
-                                                    tc.Elements().Where(z => z.Name != W.p),
-                                                    new XElement(W.p,
-                                                        paragraph.Element(W.pPr),
-                                                        errorRun));
-                                                return errorCell;
-                                            }
-                                            if (selectedData.Count() > 1)
-                                            {
-                                                var errorRun =
-                                                    CreateRunErrorMessage(
-                                                        string.Format(
-                                                            "XPath expression ({0}) returned more than one node", xPath),
-                                                        templateError);
-                                                XElement errorCell = new XElement(W.tc,
-                                                    tc.Elements().Where(z => z.Name != W.p),
-                                                    new XElement(W.p,
-                                                        paragraph.Element(W.pPr),
-                                                        errorRun));
-                                                return errorCell;
-                                            }
-                                            else
-                                            {
-                                                XObject selectedDatum = selectedData.First();
-                                                if (selectedDatum is XElement)
-                                                    newValue = ((XElement) selectedDatum).Value;
-                                                else if (selectedDatum is XAttribute)
-                                                    newValue = ((XAttribute) selectedDatum).Value;
-                                            }
-                                        }
-                                        else
-                                        {
-                                            newValue = xPathSelectResult.ToString();
                                         }
 
                                         XElement newCell = new XElement(W.tc,
@@ -736,56 +762,49 @@ namespace OpenXmlPowerTools
                 }
                 if (element.Name == PA.Conditional)
                 {
-                    IEnumerable<XObject> selectedData;
                     string xPath = (string)element.Attribute(PA.Select);
-                    object xPathSelectResult;
+                    var match = (string)element.Attribute(PA.Match);
+                    var notMatch = (string)element.Attribute(PA.NotMatch);
+
+                    if (match == null && notMatch == null)
+                        return CreateContextErrorMessage(element, "Conditional: Must specify either Match or NotMatch", templateError);
+                    if (match != null && notMatch != null)
+                        return CreateContextErrorMessage(element, "Conditional: Cannot specify both Match and NotMatch", templateError);
+
+                    string testValue = null; 
+                   
                     try
-	                {
-	                    xPathSelectResult = data.XPathEvaluate(xPath);
-	                }
+                    {
+                        testValue = EvaluateXPathToString(data, xPath, false);
+                    }
 	                catch (XPathException e)
                     {
-                        return CreateParaErrorMessage("XPathException: " + e.Message, templateError);
+                        return CreateContextErrorMessage(element, e.Message, templateError);
                     }
                   
-                    var match = (string)element.Attribute(PA.Match);
-                    string testValue = null;
-
-                    if ((xPathSelectResult is IEnumerable) && !(xPathSelectResult is string))
-                    {
-                        selectedData = ((IEnumerable) xPathSelectResult).Cast<XObject>();
-                        if (!selectedData.Any())
-                        {
-                            return CreateParaErrorMessage(string.Format("Conditional XPath expression ({0}) returned no results", xPath), templateError);
-                        }
-                        if (selectedData.Count() > 1)
-                        {
-                            return CreateParaErrorMessage(string.Format("Conditional XPath expression ({0}) returned more than one node", xPath), templateError);
-                        }
-                        XObject selectedDatum = selectedData.First();
-                        if (selectedDatum is XElement)
-                            testValue = ((XElement) selectedDatum).Value;
-                        else if (selectedDatum is XAttribute)
-                            testValue = ((XAttribute) selectedDatum).Value;
-                    }
-                    else
-                    {
-                        testValue = xPathSelectResult.ToString();
-                    }
-                   
-                    if (testValue == match)
+                    if ((match != null && testValue == match) || (notMatch != null && testValue != notMatch))
                     {
                         var content = element.Elements().Select(e => ContentReplacementTransform(e, data, templateError));
                         return content;
                     }
-                    else
-                        return null;
+                    return null;
                 }
                 return new XElement(element.Name,
                     element.Attributes(),
                     element.Nodes().Select(n => ContentReplacementTransform(n, data, templateError)));
             }
             return node;
+        }
+
+        private static object CreateContextErrorMessage(XElement element, string errorMessage, TemplateError templateError)
+        {
+            XElement para = element.Descendants(W.p).FirstOrDefault();
+            XElement run = element.Descendants(W.r).FirstOrDefault();
+            var errorRun = CreateRunErrorMessage(errorMessage, templateError);
+            if (para != null)
+                return new XElement(W.p, errorRun);
+            else
+                return errorRun;
         }
 
         private static XElement CreateRunErrorMessage(string errorMessage, TemplateError templateError)
@@ -809,6 +828,45 @@ namespace OpenXmlPowerTools
                         new XElement(W.highlight, new XAttribute(W.val, "yellow"))),
                         new XElement(W.t, errorMessage)));
             return errorPara;
+        }
+
+        private static string EvaluateXPathToString(XElement element, string xPath, bool optional )
+        {
+            object xPathSelectResult;
+            try
+            {
+                //support some cells in the table may not have an xpath expression.
+                if (String.IsNullOrWhiteSpace(xPath)) return String.Empty;
+                
+                xPathSelectResult = element.XPathEvaluate(xPath);
+            }
+            catch (XPathException e)
+            {
+                throw new XPathException("XPathException: " + e.Message, e);
+            }
+
+            if ((xPathSelectResult is IEnumerable) && !(xPathSelectResult is string))
+            {
+                var selectedData = ((IEnumerable) xPathSelectResult).Cast<XObject>();
+                if (!selectedData.Any())
+                {
+                    if (optional) return string.Empty;
+                    throw new XPathException(string.Format("XPath expression ({0}) returned no results", xPath));
+                }
+                if (selectedData.Count() > 1)
+                {
+                    throw new XPathException(string.Format("XPath expression ({0}) returned more than one node", xPath));
+                }
+
+                XObject selectedDatum = selectedData.First(); 
+                
+                if (selectedDatum is XElement) return ((XElement) selectedDatum).Value;
+
+                if (selectedDatum is XAttribute) return ((XAttribute) selectedDatum).Value;
+            }
+
+            return xPathSelectResult.ToString();
+
         }
     }
 }
