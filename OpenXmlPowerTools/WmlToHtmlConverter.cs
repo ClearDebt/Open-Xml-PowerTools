@@ -451,7 +451,7 @@ namespace OpenXmlPowerTools
             {
                 try
                 {
-                    return new XElement(Xhtml.a,
+                    var a = new XElement(Xhtml.a,
                         new XAttribute("href",
                             wordDoc.MainDocumentPart
                                 .HyperlinkRelationships
@@ -460,6 +460,9 @@ namespace OpenXmlPowerTools
                             ),
                         element.Elements(W.r).Select(run => ConvertRun(wordDoc, settings, run))
                         );
+                    if (!a.Nodes().Any())
+                        a.Add(new XText(""));
+                    return a;
                 }
                 catch (UriFormatException)
                 {
@@ -567,6 +570,8 @@ namespace OpenXmlPowerTools
             var a = new XElement(Xhtml.a,
                 new XAttribute("href", "#" + (string) element.Attribute(W.anchor)),
                 element.Elements(W.r).Select(run => ConvertRun(wordDoc, settings, run)));
+            if (!a.Nodes().Any())
+                a.Add(new XText(""));
             style.Add("text-decoration", "none");
             a.AddAnnotation(style);
             return a;
@@ -581,6 +586,8 @@ namespace OpenXmlPowerTools
             var a = new XElement(Xhtml.a,
                 new XAttribute("id", name),
                 new XText(""));
+            if (!a.Nodes().Any())
+                a.Add(new XText(""));
             style.Add("text-decoration", "none");
             a.AddAnnotation(style);
             return a;
@@ -3069,9 +3076,16 @@ namespace OpenXmlPowerTools
                         return g.Select(n => ConvertToHtmlTransform(wordDoc, settings, n, false, 0m));
 
                     var content = g.DescendantsAndSelf(W.r).Select(run => ConvertRun(wordDoc, settings, run));
-                    return parsed.Arguments.Length > 0
+                    var a = parsed.Arguments.Length > 0
                         ? new XElement(Xhtml.a, new XAttribute("href", parsed.Arguments[0]), content)
                         : new XElement(Xhtml.a, content);
+                    var a2 = a as XElement;
+                    if (!a2.Nodes().Any())
+                    {
+                        a2.Add(new XText(""));
+                        return a2;
+                    }
+                    return a;
                 })
                 .ToList();
 
@@ -3113,6 +3127,25 @@ namespace OpenXmlPowerTools
             var containerElement = element.Elements()
                 .FirstOrDefault(e => e.Name == WP.inline || e.Name == WP.anchor);
             if (containerElement == null) return null;
+
+            string hyperlinkUri = null;
+            var hyperlinkElement = element
+                .Elements(WP.inline)
+                .Elements(WP.docPr)
+                .Elements(A.hlinkClick)
+                .FirstOrDefault();
+            if (hyperlinkElement != null)
+            {
+                var rId = (string)hyperlinkElement.Attribute(R.id);
+                if (rId != null)
+                {
+                    var hyperlinkRel = wordDoc.MainDocumentPart.HyperlinkRelationships.FirstOrDefault(hlr => hlr.Id == rId);
+                    if (hyperlinkRel != null)
+                    {
+                        hyperlinkUri = hyperlinkRel.Uri.ToString();
+                    }
+                }
+            }
 
             var extentCx = (int?)containerElement.Elements(WP.extent)
                 .Attributes(NoNamespace.cx).FirstOrDefault();
@@ -3166,7 +3199,14 @@ namespace OpenXmlPowerTools
                         DrawingElement = element,
                         AltText = altText,
                     };
-                    return imageHandler(imageInfo);
+                    var imgElement2 = imageHandler(imageInfo);
+                    if (hyperlinkUri != null)
+                    {
+                        return new XElement(XhtmlNoNamespace.a,
+                            new XAttribute(XhtmlNoNamespace.href, hyperlinkUri),
+                            imgElement2);
+                    }
+                    return imgElement2;
                 }
 
                 var imageInfo2 = new ImageInfo()
@@ -3176,7 +3216,14 @@ namespace OpenXmlPowerTools
                     DrawingElement = element,
                     AltText = altText,
                 };
-                return imageHandler(imageInfo2);
+                var imgElement = imageHandler(imageInfo2);
+                if (hyperlinkUri != null)
+                {
+                    return new XElement(XhtmlNoNamespace.a,
+                        new XAttribute(XhtmlNoNamespace.href, hyperlinkUri),
+                        imgElement);
+                }
+                return imgElement;
             }
         }
 
